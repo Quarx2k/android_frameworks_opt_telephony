@@ -2486,19 +2486,25 @@ public final class RIL extends BaseCommands implements CommandsInterface {
                     }
                     break;
             }
+	}
+        handleProcessedSolicitedResponse(rr, error, ret);
+        rr.release();
+    }
 
+    protected void
+    handleProcessedSolicitedResponse(RILRequest rr, int error, Object ret) {
+        if (error != 0) {
             rr.onError(error, ret);
-        } else {
-
-            if (RILJ_LOGD) riljLog(rr.serialString() + "< " + requestToString(rr.mRequest)
-                    + " " + retToString(rr.mRequest, ret));
-
-            if (rr.mResult != null) {
-                AsyncResult.forMessage(rr.mResult, ret, null);
-                rr.mResult.sendToTarget();
-            }
+            return;
         }
-        return rr;
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "< " + requestToString(rr.mRequest)
+            + " " + retToString(rr.mRequest, ret));
+
+        if (rr.mResult != null) {
+            AsyncResult.forMessage(rr.mResult, ret, null);
+            rr.mResult.sendToTarget();
+        }
     }
 
     private String
