@@ -503,22 +503,23 @@ public class SamsungQualcommRIL extends RIL implements CommandsInterface {
     operatorCheck(Parcel p) {
         String response[] = (String[])responseStrings(p);
         for(int i=0; i<response.length; i++){
-            if (response[i]!= null&&i<2){
-                if (response[i].equals("       Empty") || (response[i].equals("") && !isGSM)) {
-                    response[i]=operator;
-                } else if (!response[i].equals(""))  {
-                    try {
-                        Integer.parseInt(response[i]);
-                        response[i]=Operators.operatorReplace(response[i]);
-                        //optimize
-                        if(i==0)
-                            response[i+1]=response[i];
-                    }  catch(NumberFormatException E){
-                        // do nothing
+            if (response[i]!= null){
+                if (i<2){
+                    if (response[i].equals("       Empty") || (response[i].equals("") && !isGSM)) {
+                        response[i]=operator;
+                    } else if (!response[i].equals(""))  {
+                        try {
+                            Integer.parseInt(response[i]);
+                            response[i]=Operators.operatorReplace(response[i]);
+                            //optimize
+                            if(i==0)
+                                response[i+1]=response[i];
+                        }  catch(NumberFormatException E){
+                            // do nothing
+                        }
                     }
-                }
-                else if (response[i].equals("31000")|| response[i].equals("11111") || response[i].equals("123456") || response[i].equals("31099") || (response[i].equals("") && !isGSM)){
-                    response[i]=homeOperator;
+                } else if (response[i].equals("31000")|| response[i].equals("11111") || response[i].equals("123456") || response[i].equals("31099") || (response[i].equals("") && !isGSM)){
+                        response[i]=homeOperator;
                 }
             }
         }
@@ -536,7 +537,11 @@ public class SamsungQualcommRIL extends RIL implements CommandsInterface {
                 if (response[i]== null){
                     response[i]=Integer.toString(Integer.MAX_VALUE);
                 } else {
-                    response[i]=Integer.toString(Integer.parseInt(response[i],16));
+                    try {
+                        Integer.parseInt(response[i]);
+                    } catch(NumberFormatException e) {
+                        response[i]=Integer.toString(Integer.parseInt(response[i],16));
+                    }
                 }
             }
         }
