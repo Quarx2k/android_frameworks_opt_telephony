@@ -40,11 +40,14 @@ import com.android.internal.telephony.TelephonyIntents;
 import com.android.internal.telephony.IccCardConstants.State;
 import com.android.internal.telephony.cdma.CdmaSubscriptionSourceManager;
 import com.android.internal.telephony.Phone;
+import com.android.internal.telephony.PhoneFactory;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppState;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.PersoSubState;
 import com.android.internal.telephony.uicc.IccCardStatus.CardState;
 import com.android.internal.telephony.uicc.IccCardStatus.PinState;
 import com.android.internal.telephony.uicc.UiccController;
+import com.android.internal.telephony.uicc.RuimRecords;
+
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -140,13 +143,61 @@ public class IccCardProxy extends Handler implements IccCard {
             }
             if (ServiceState.isGsm(radioTech)) {
                 mCurrentAppType = UiccController.APP_FAM_3GPP;
-            } else {
+            } else if (ServiceState.isCdma(radioTech)){
                 mCurrentAppType = UiccController.APP_FAM_3GPP2;
+            } else {
+                // If reported radio tech is unknown - we will have to guess
+                mCurrentAppType = guessRadioTech();
+                if (DBG) {
+                    log("Radio tech is unknown. Guessed radio tech family is " + mCurrentAppType);
+                }
             }
             updateQuietMode();
+            updateActiveRecord();
         }
     }
 
+    /**
+     * This method sets the IccRecord, corresponding to the currently active
+     * subscription, as the active record.
+     */
+    private void updateActiveRecord() {
+        log("updateActiveRecord app type = " + mCurrentAppType +
+                "mIccRecords = " + mIccRecords);
+
+        if (mIccRecords == null) {
+            return;
+        }
+
+        if (mCurrentAppType == UiccController.APP_FAM_3GPP2) {
+            int newSubscriptionSource = mCdmaSSM.getCdmaSubscriptionSource();
+            // Allow both RUIM and CdmaLte from NV to trigger records
+            // required
+            if (newSubscriptionSource == CdmaSubscriptionSourceManager.SUBSCRIPTION_FROM_RUIM
+                || ((PhoneFactory.getDefaultPhone().getLteOnCdmaMode()
+                == PhoneConstants.LTE_ON_CDMA_TRUE) && (newSubscriptionSource == CdmaSubscriptionSourceManager.SUBSCRIPTION_FROM_NV))) {
+                // Set this as the Active record.
+                log("Setting Ruim Record as active");
+                mIccRecords.recordsRequired();
+            }
+        } else if (mCurrentAppType == UiccController.APP_FAM_3GPP) {
+            log("Setting SIM Record as active");
+            mIccRecords.recordsRequired();
+        }
+    }
+
+    /**
+     * This function guesses radio tech family based on available uicc applications
+     */
+    private int guessRadioTech() {
+        UiccCardApplication app =
+                mUiccController.getUiccCardApplication(UiccController.APP_FAM_3GPP);
+        if (app != null) {
+            return UiccController.APP_FAM_3GPP;
+        } else {
+            return UiccController.APP_FAM_3GPP2;
+        }
+    }
     /**
      * In case of 3gpp2 we need to find out if subscription used is coming from
      * NV in which case we shouldn't broadcast any sim states changes.
@@ -156,22 +207,15 @@ public class IccCardProxy extends Handler implements IccCard {
             boolean oldQuietMode = mQuietMode;
             boolean newQuietMode;
             int cdmaSource = Phone.CDMA_SUBSCRIPTION_UNKNOWN;
-            boolean isLteOnCdmaMode = TelephonyManager.getLteOnCdmaModeStatic()
-                    == PhoneConstants.LTE_ON_CDMA_TRUE;
             if (mCurrentAppType == UiccController.APP_FAM_3GPP) {
                 newQuietMode = false;
                 if (DBG) log("updateQuietMode: 3GPP subscription -> newQuietMode=" + newQuietMode);
             } else {
-                if (isLteOnCdmaMode) {
-                    log("updateQuietMode: is cdma/lte device, force IccCardProxy into 3gpp mode");
-                    mCurrentAppType = UiccController.APP_FAM_3GPP;
-                }
                 cdmaSource = mCdmaSSM != null ?
                         mCdmaSSM.getCdmaSubscriptionSource() : Phone.CDMA_SUBSCRIPTION_UNKNOWN;
 
                 newQuietMode = (cdmaSource == Phone.CDMA_SUBSCRIPTION_NV)
-                        && (mCurrentAppType == UiccController.APP_FAM_3GPP2)
-                        && !isLteOnCdmaMode;
+                        && (mCurrentAppType == UiccController.APP_FAM_3GPP2);
             }
 
             if (mQuietMode == false && newQuietMode == true) {
@@ -190,8 +234,7 @@ public class IccCardProxy extends Handler implements IccCard {
             }
             if (DBG) {
                 log("updateQuietMode: QuietMode is " + mQuietMode + " (app_type="
-                    + mCurrentAppType + " isLteOnCdmaMode=" + isLteOnCdmaMode
-                    + " cdmaSource=" + cdmaSource + ")");
+                    + mCurrentAppType + " cdmaSource=" + cdmaSource + ")");
             }
             mInitialized = true;
             sendMessage(obtainMessage(EVENT_ICC_CHANGED));
@@ -237,6 +280,7 @@ public class IccCardProxy extends Handler implements IccCard {
                 break;
             case EVENT_CDMA_SUBSCRIPTION_SOURCE_CHANGED:
                 updateQuietMode();
+                updateActiveRecord();
                 break;
             default:
                 loge("Unhandled message with number: " + msg.what);
@@ -265,6 +309,7 @@ public class IccCardProxy extends Handler implements IccCard {
                 mUiccApplication = newApp;
                 mIccRecords = newRecords;
                 registerUiccCardEvents();
+                updateActiveRecord();
             }
 
             updateExternalState();

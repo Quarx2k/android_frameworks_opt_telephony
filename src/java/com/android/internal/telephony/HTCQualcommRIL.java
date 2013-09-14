@@ -24,11 +24,16 @@ import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.Message;
 import android.os.Parcel;
+import android.os.SystemProperties;
+import android.provider.Settings;
 import android.text.TextUtils;
+import android.telephony.CellInfo;
 import android.telephony.Rlog;
 
 import com.android.internal.telephony.uicc.IccCardApplicationStatus;
 import com.android.internal.telephony.uicc.IccCardStatus;
+import com.android.internal.telephony.dataconnection.DcFailCause;
+import com.android.internal.telephony.dataconnection.DataCallResponse;
 
 import java.util.ArrayList;
 
@@ -42,6 +47,7 @@ public class HTCQualcommRIL extends RIL implements CommandsInterface {
     private static final int RIL_UNSOL_RESPONSE_VOICE_RADIO_TECH_CHANGED = 21004;
     private static final int RIL_UNSOL_RESPONSE_IMS_NETWORK_STATE_CHANGED = 21005;
     private static final int RIL_UNSOL_RESPONSE_DATA_NETWORK_STATE_CHANGED = 21007;
+    private static final int RIL_UNSOL_RESPONSE_DATA_NETWORK_STATE_CHANGED_M7 = 5757;
 
     public HTCQualcommRIL(Context context, int networkMode, int cdmaSubscription) {
         super(context, networkMode, cdmaSubscription);
@@ -50,32 +56,48 @@ public class HTCQualcommRIL extends RIL implements CommandsInterface {
     @Override
     protected Object
     responseIccCardStatus(Parcel p) {
-        Object ret;
-
-        boolean extraIccCardStates = needsOldRilFeature("extraicccardstates");
-
-        if (extraIccCardStates) {
-            int dataPosition = p.dataPosition();
-            int cardState = p.readInt();
-
-            if (cardState >= 3) {
-                ret = responseVoid(p);
-            } else {
-                p.setDataPosition(dataPosition);
-                ret = super.responseIccCardStatus(p);
-            }
-        } else {
-            ret = super.responseIccCardStatus(p);
-        }
-
-        // force CDMA + LTE network mode
+        // get type from Settings.Global default to CDMA + LTE network mode
         boolean forceCdmaLte = needsOldRilFeature("forceCdmaLteNetworkType");
-
         if (forceCdmaLte) {
-            setPreferredNetworkType(NETWORK_MODE_LTE_CDMA_EVDO, null);
+            int phoneType = android.provider.Settings.Global.getInt(mContext.getContentResolver(),
+                            android.provider.Settings.Global.PREFERRED_NETWORK_MODE,
+                            NETWORK_MODE_LTE_CDMA_EVDO);
+            setPreferredNetworkType(phoneType, null);
         }
 
-        return ret;
+        return super.responseIccCardStatus(p);
+    }
+
+    @Override
+    protected DataCallResponse getDataCallResponse(Parcel p, int version) {
+        DataCallResponse dataCall = new DataCallResponse();
+
+        dataCall.version = version;
+        dataCall.status = p.readInt();
+        dataCall.suggestedRetryTime = p.readInt();
+        dataCall.cid = p.readInt();
+        dataCall.active = p.readInt();
+        dataCall.type = p.readString();
+        dataCall.ifname = p.readString();
+        /* Check dataCall.active != 0 so address, dns, gateways are provided
+         * when switching LTE<->3G<->2G */
+        if ((dataCall.status == DcFailCause.NONE.getErrorCode()) &&
+                TextUtils.isEmpty(dataCall.ifname) && dataCall.active != 0) {
+            throw new RuntimeException("getDataCallResponse, no ifname");
+        }
+        String addresses = p.readString();
+        if (!TextUtils.isEmpty(addresses)) {
+            dataCall.addresses = addresses.split(" ");
+        }
+        String dnses = p.readString();
+        if (!TextUtils.isEmpty(dnses)) {
+            dataCall.dnses = dnses.split(" ");
+        }
+        String gateways = p.readString();
+        if (!TextUtils.isEmpty(gateways)) {
+            dataCall.gateways = gateways.split(" ");
+        }
+        return dataCall;
     }
 
     @Override
@@ -94,6 +116,7 @@ public class HTCQualcommRIL extends RIL implements CommandsInterface {
             case RIL_UNSOL_RESPONSE_VOICE_RADIO_TECH_CHANGED: ret = responseVoid(p); break;
             case RIL_UNSOL_RESPONSE_IMS_NETWORK_STATE_CHANGED: ret = responseVoid(p); break;
             case RIL_UNSOL_RESPONSE_DATA_NETWORK_STATE_CHANGED: ret = responseVoid(p); break;
+            case RIL_UNSOL_RESPONSE_DATA_NETWORK_STATE_CHANGED_M7: ret = responseVoid(p); break;
             case RIL_UNSOL_RIL_CONNECTED: ret = responseInts(p); break;
 
             default:
@@ -110,10 +133,22 @@ public class HTCQualcommRIL extends RIL implements CommandsInterface {
             case RIL_UNSOL_CDMA_3G_INDICATOR:
             case RIL_UNSOL_CDMA_ENHANCE_ROAMING_INDICATOR:
             case RIL_UNSOL_CDMA_NETWORK_BASE_PLUSCODE_DIAL:
-            case RIL_UNSOL_RESPONSE_PHONE_MODE_CHANGE:
-            case RIL_UNSOL_RESPONSE_VOICE_RADIO_TECH_CHANGED:
             case RIL_UNSOL_RESPONSE_IMS_NETWORK_STATE_CHANGED:
-            case RIL_UNSOL_RESPONSE_DATA_NETWORK_STATE_CHANGED:
+            case RIL_UNSOL_RESPONSE_PHONE_MODE_CHANGE: {
+                /* Unhandled HTC responses */
+                break;
+            }
+            case RIL_UNSOL_RESPONSE_VOICE_RADIO_TECH_CHANGED: {
+                if (RILJ_LOGD) unsljLogRet(response, ret);
+
+                if (mVoiceRadioTechChangedRegistrants != null) {
+                    mVoiceRadioTechChangedRegistrants.notifyRegistrants(
+                                        new AsyncResult(null, ret, null));
+                }
+                break;
+            }
+            case RIL_UNSOL_RESPONSE_DATA_NETWORK_STATE_CHANGED_M7:
+            case RIL_UNSOL_RESPONSE_DATA_NETWORK_STATE_CHANGED: {
                 if (RILJ_LOGD) unsljLogRet(response, ret);
 
                 if (mExitEmergencyCallbackModeRegistrants != null) {
@@ -121,17 +156,22 @@ public class HTCQualcommRIL extends RIL implements CommandsInterface {
                                         new AsyncResult (null, null, null));
                 }
                 break;
+            }
             case RIL_UNSOL_RIL_CONNECTED: {
                 if (RILJ_LOGD) unsljLogRet(response, ret);
 
-                boolean skipRadioPowerOff = needsOldRilFeature("skipradiooff");
-
                 // Initial conditions
-                if (!skipRadioPowerOff) {
+                if (SystemProperties.get("ril.socket.reset").equals("1")) {
                     setRadioPower(false, null);
                 }
+                // Trigger socket reset if RIL connect is called again
+                SystemProperties.set("ril.socket.reset", "1");
                 setPreferredNetworkType(mPreferredNetworkType, null);
-                setCdmaSubscriptionSource(mCdmaSubscription, null);
+                int cdmaSubscription = Settings.Global.getInt(mContext.getContentResolver(), Settings.Global.CDMA_SUBSCRIPTION_MODE, -1);
+                if(cdmaSubscription != -1) {
+                    setCdmaSubscriptionSource(cdmaSubscription, null);
+                }
+                setCellInfoListRate(Integer.MAX_VALUE, null);
                 notifyRegistrantsRilConnectionChanged(((int[])ret)[0]);
                 break;
             }
