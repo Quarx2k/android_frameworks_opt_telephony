@@ -1548,6 +1548,8 @@ public abstract class DcTrackerBase extends Handler {
             putRecoveryAction(RecoveryAction.GET_DATA_CALL_LIST);
         } else {
             if (VDBG_STALL) log("updateDataStallInfo: NONE");
+            // Get data connection up again
+            mPhone.mCi.getDataCallList(obtainMessage(DctConstants.EVENT_DATA_STATE_CHANGED));
         }
     }
 
