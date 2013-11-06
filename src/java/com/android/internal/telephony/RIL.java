@@ -2486,9 +2486,9 @@ public final class RIL extends BaseCommands implements CommandsInterface {
                     }
                     break;
             }
-	}
-        handleProcessedSolicitedResponse(rr, error, ret);
-        rr.release();
+    }
+	handleProcessedSolicitedResponse(rr, error, ret);
+        return rr;
     }
 
     protected void
@@ -2507,7 +2507,8 @@ public final class RIL extends BaseCommands implements CommandsInterface {
         }
     }
 
-    private String
+    protected String
+
     retToString(int req, Object ret) {
         if (ret == null) return "";
         switch (req) {
