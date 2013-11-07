@@ -557,7 +557,7 @@ public class RIL extends BaseCommands implements CommandsInterface {
                 RILRequest.resetSerial();
 
                 // Clear request list on close
-                clearRequestList(RADIO_NOT_AVAILABLE, false);
+                clearRequestsList(RADIO_NOT_AVAILABLE, false);
             }} catch (Throwable tr) {
                 Rlog.e(RILJ_LOG_TAG,"Uncaught exception", tr);
             }
