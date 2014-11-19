@@ -280,7 +280,7 @@ public class RIL extends BaseCommands implements CommandsInterface {
     // When we are testing emergency calls
     AtomicBoolean mTestingEmergencyCall = new AtomicBoolean(false);
 
-    private Integer mInstanceId;
+    protected Integer mInstanceId;
 
     // Number of per-network elements expected in QUERY_AVAILABLE_NETWORKS's response.
     // 4 elements is default, but many RILs actually return 5, making it impossible to
@@ -775,6 +775,16 @@ public class RIL extends BaseCommands implements CommandsInterface {
 
     public void
     getDataCallProfile(int appType, Message result) {
+        if(mRilVersion < 10) {
+            if (result != null) {
+                CommandException ex = new CommandException(
+                    CommandException.Error.REQUEST_NOT_SUPPORTED);
+                AsyncResult.forMessage(result, null, ex);
+                result.sendToTarget();
+            }
+            return;
+        }
+
         RILRequest rr = RILRequest.obtain(
                 RILConstants.RIL_REQUEST_GET_DATA_CALL_PROFILE, result);
 
@@ -4258,7 +4268,7 @@ public class RIL extends BaseCommands implements CommandsInterface {
         }
     }
 
-    private ArrayList<CellInfo> responseCellInfoList(Parcel p) {
+    protected ArrayList<CellInfo> responseCellInfoList(Parcel p) {
         int numberOfInfoRecs;
         ArrayList<CellInfo> response;
 
