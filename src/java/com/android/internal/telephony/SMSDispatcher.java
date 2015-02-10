@@ -37,6 +37,7 @@ import android.os.Binder;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
+import android.os.Process;
 import android.os.SystemProperties;
 import android.provider.Settings;
 import android.provider.Telephony;
@@ -68,6 +69,7 @@ import com.android.internal.telephony.uicc.UiccController;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Random;
@@ -331,6 +333,16 @@ public abstract class SMSDispatcher extends Handler {
 
         default:
             Rlog.e(TAG, "handleMessage() ignoring message of unexpected type " + msg.what);
+        }
+    }
+
+    private static boolean isSystemUid(Context context, String pkgName) {
+        final PackageManager packageManager = context.getPackageManager();
+        try {
+            return packageManager.getPackageInfo(pkgName, 0)
+                .applicationInfo.uid == Process.SYSTEM_UID;
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
         }
     }
 
@@ -752,10 +764,21 @@ public abstract class SMSDispatcher extends Handler {
             tracker.onFailed(mContext, RESULT_ERROR_NULL_PDU, 0/*errorCode*/);
             return;
         }
-
+        
+        PendingIntent sentIntent = tracker.mSentIntent;
         // Get calling app package name via UID from Binder call
         PackageManager pm = mContext.getPackageManager();
-        String[] packageNames = pm.getPackagesForUid(Binder.getCallingUid());
+        int callingUid = Binder.getCallingUid();
+        // Special case: We're being proxied by the telephony stack itself,
+        // so use the intent generator's UID if one exists
+        String[] packageNames;
+
+        if (callingUid == android.os.Process.PHONE_UID && sentIntent != null &&
+                sentIntent.getCreatorPackage() != null) {
+            packageNames = new String[] { sentIntent.getCreatorPackage() };
+        } else {
+            packageNames = pm.getPackagesForUid(callingUid);
+        }
 
         if (packageNames == null || packageNames.length == 0) {
             // Refuse to send SMS if we can't get the calling package name.
@@ -797,6 +820,15 @@ public abstract class SMSDispatcher extends Handler {
      * @return true if the destination is approved; false if user confirmation event was sent
      */
     boolean checkDestination(SmsTracker tracker) {
+        List<String> ignorePackages = Arrays.asList(
+                mContext.getResources().getStringArray(R.array.config_ignored_sms_packages));
+
+        String packageName = resolvePackageName(tracker);
+
+        if (ignorePackages.contains(packageName)) {
+            return true;
+        }
+
         if (mContext.checkCallingOrSelfPermission(SEND_SMS_NO_CONFIRMATION_PERMISSION)
                 == PackageManager.PERMISSION_GRANTED) {
             return true;            // app is pre-approved to send to short codes
@@ -892,6 +924,25 @@ public abstract class SMSDispatcher extends Handler {
             Rlog.e(TAG, "PackageManager Name Not Found for package " + appPackage);
             return appPackage;  // fall back to package name if we can't get app label
         }
+    }
+
+    /**
+     * Returns the package name from the original creator of the sms, even
+     * if the package is mapped with others in a specific UID (like System UID)
+     *
+     * @param tracker
+     * @return the package name that created the original sms
+     */
+    private String resolvePackageName(SmsTracker tracker) {
+        PendingIntent sentIntent = tracker.mSentIntent;
+        String packageName = tracker.mAppInfo.applicationInfo.packageName;
+        // System UID maps to multiple packages. Try to narrow it
+        // down to an actual sender if possible
+        if (isSystemUid(mContext, packageName) && sentIntent != null &&
+                sentIntent.getCreatorPackage() != null) {
+            packageName = sentIntent.getCreatorPackage();
+        }
+        return packageName;
     }
 
     /**
@@ -1301,7 +1352,17 @@ public abstract class SMSDispatcher extends Handler {
             boolean isExpectMore, int validityPeriod) {
         // Get calling app package name via UID from Binder call
         PackageManager pm = mContext.getPackageManager();
-        String[] packageNames = pm.getPackagesForUid(Binder.getCallingUid());
+        int callingUid = Binder.getCallingUid();
+        // Special case: We're being proxied by the telephony stack itself,
+        // so use the intent generator's UID if one exists
+        String[] packageNames;
+
+        if (callingUid == android.os.Process.PHONE_UID && sentIntent != null &&
+                sentIntent.getCreatorPackage() != null) {
+            packageNames = new String[] { sentIntent.getCreatorPackage() };
+        } else {
+            packageNames = pm.getPackagesForUid(callingUid);
+        }
 
         // Get package info via packagemanager
         PackageInfo appInfo = null;

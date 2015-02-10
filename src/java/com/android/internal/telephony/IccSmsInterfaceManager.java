@@ -24,8 +24,9 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteException;
 import android.net.Uri;
-import android.os.AsyncResult;
 import android.os.Binder;
+import android.os.RemoteException;
+import android.os.AsyncResult;
 import android.os.Handler;
 import android.os.Message;
 import android.os.UserManager;
@@ -33,6 +34,7 @@ import android.provider.Telephony;
 import android.telephony.Rlog;
 import android.telephony.SmsManager;
 import android.telephony.SmsMessage;
+import android.telephony.TelephonyManager;
 import android.util.Log;
 
 import com.android.internal.telephony.gsm.SmsBroadcastConfigInfo;
@@ -40,7 +42,6 @@ import com.android.internal.telephony.cdma.CdmaSmsBroadcastConfigInfo;
 import com.android.internal.telephony.uicc.IccConstants;
 import com.android.internal.telephony.uicc.IccFileHandler;
 import com.android.internal.telephony.uicc.UiccController;
-import com.android.internal.telephony.SmsNumberUtils;
 import com.android.internal.telephony.uicc.IccRecords;
 import com.android.internal.util.HexDump;
 
@@ -278,6 +279,9 @@ public class IccSmsInterfaceManager {
         return mSuccess;
     }
 
+    public void synthesizeMessages(String originatingAddress, String scAddress, List<String> messages, long timestampMillis) throws RemoteException {
+    }
+
     /**
      * Retrieves all messages currently stored on Icc.
      *
@@ -290,10 +294,6 @@ public class IccSmsInterfaceManager {
         mContext.enforceCallingOrSelfPermission(
                 Manifest.permission.RECEIVE_SMS,
                 "Reading messages from Icc");
-        if (mAppOps.noteOp(AppOpsManager.OP_READ_ICC_SMS, Binder.getCallingUid(),
-                callingPackage) != AppOpsManager.MODE_ALLOWED) {
-            return new ArrayList<SmsRawData>();
-        }
         synchronized(mLock) {
 
             IccFileHandler fh = mPhone.getIccFileHandler();
@@ -435,16 +435,32 @@ public class IccSmsInterfaceManager {
 
     public void sendText(String callingPackage, String destAddr, String scAddr,
             String text, PendingIntent sentIntent, PendingIntent deliveryIntent) {
-        mPhone.getContext().enforceCallingPermission(
-                Manifest.permission.SEND_SMS,
-                "Sending SMS message");
+        int callingUid = Binder.getCallingUid();
+
+        String[] callingParts = callingPackage.split("\\\\");
+        if (callingUid == android.os.Process.PHONE_UID &&
+                                         callingParts.length > 1) {
+            callingUid = Integer.parseInt(callingParts[1]);
+        }
+
+        // Reset the calling package, remove the trailing uid so
+        // shouldWriteMessageForPackage can match correctly
+        // if our message has been synthesized by an
+        // external package
+        callingPackage = callingParts[0];
+
+        if (Binder.getCallingPid() != android.os.Process.myPid()) {
+            mPhone.getContext().enforceCallingPermission(
+                    Manifest.permission.SEND_SMS,
+                    "Sending SMS message");
+        }
         if (Rlog.isLoggable("SMS", Log.VERBOSE)) {
             log("sendText: destAddr=" + destAddr + " scAddr=" + scAddr +
                 " text='"+ text + "' sentIntent=" +
                 sentIntent + " deliveryIntent=" + deliveryIntent);
         }
-        if (mAppOps.noteOp(AppOpsManager.OP_SEND_SMS, Binder.getCallingUid(),
-                callingPackage) != AppOpsManager.MODE_ALLOWED) {
+        if (mAppOps.noteOp(AppOpsManager.OP_SEND_SMS, callingUid,
+                callingParts[0]) != AppOpsManager.MODE_ALLOWED) {
             return;
         }
         destAddr = filterDestAddress(destAddr);
@@ -579,9 +595,25 @@ public class IccSmsInterfaceManager {
     public void sendMultipartText(String callingPackage, String destAddr, String scAddr,
             List<String> parts, List<PendingIntent> sentIntents,
             List<PendingIntent> deliveryIntents) {
-        mPhone.getContext().enforceCallingPermission(
-                Manifest.permission.SEND_SMS,
-                "Sending SMS message");
+        int callingUid = Binder.getCallingUid();
+
+        String[] callingParts = callingPackage.split("\\\\");
+        if (callingUid == android.os.Process.PHONE_UID &&
+                                         callingParts.length > 1) {
+            callingUid = Integer.parseInt(callingParts[1]);
+        }
+
+        // Reset the calling package, remove the trailing uid so
+        // shouldWriteMessageForPackage can match correctly
+        // if our message has been synthesized by an
+        // external package
+        callingPackage = callingParts[0];
+
+        if (Binder.getCallingPid() != android.os.Process.myPid()) {
+            mPhone.getContext().enforceCallingPermission(
+                    Manifest.permission.SEND_SMS,
+                    "Sending SMS message");
+        }
         if (Rlog.isLoggable("SMS", Log.VERBOSE)) {
             int i = 0;
             for (String part : parts) {
@@ -589,8 +621,8 @@ public class IccSmsInterfaceManager {
                         ", part[" + (i++) + "]=" + part);
             }
         }
-        if (mAppOps.noteOp(AppOpsManager.OP_SEND_SMS, Binder.getCallingUid(),
-                callingPackage) != AppOpsManager.MODE_ALLOWED) {
+        if (mAppOps.noteOp(AppOpsManager.OP_SEND_SMS, callingUid,
+                callingParts[0]) != AppOpsManager.MODE_ALLOWED) {
             return;
         }
 
@@ -781,7 +813,6 @@ public class IccSmsInterfaceManager {
             return disableCdmaBroadcastRange(startMessageId, endMessageId);
         }
     }
-
     synchronized public boolean enableGsmBroadcastRange(int startMessageId, int endMessageId) {
         if (DBG) log("enableGsmBroadcastRange");
 
@@ -1267,5 +1298,29 @@ public class IccSmsInterfaceManager {
 
         log("getSmsCapacityOnIcc().numberOnIcc = " + numberOnIcc);
         return numberOnIcc;
+    }
+
+    /** @hide **/
+    public boolean isShortSMSCode(String destAddr) {
+        TelephonyManager telephonyManager;
+        int smsCategory = SmsUsageMonitor.CATEGORY_NOT_SHORT_CODE;
+
+        telephonyManager =(TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE);
+
+        String countryIso = telephonyManager.getSimCountryIso();
+        if (countryIso == null || countryIso.length() != 2) {
+            countryIso = telephonyManager.getNetworkCountryIso();
+        }
+
+        smsCategory = SmsUsageMonitor.mergeShortCodeCategories(smsCategory,
+                mPhone.mSmsUsageMonitor.checkDestination(destAddr, countryIso));
+
+        if (smsCategory == SmsUsageMonitor.CATEGORY_NOT_SHORT_CODE
+                || smsCategory == SmsUsageMonitor.CATEGORY_FREE_SHORT_CODE
+                || smsCategory == SmsUsageMonitor.CATEGORY_STANDARD_SHORT_CODE) {
+            return false;    // not a premium short code
+        }
+
+        return true;
     }
 }
