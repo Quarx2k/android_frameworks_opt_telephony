@@ -106,8 +106,51 @@ public class CDMALTEPhone extends CDMAPhone {
     }
 
     @Override
-    public void handleMessage (Message msg) {
+    protected void initSstIcc() {
+        mSST = new CdmaLteServiceStateTracker(this);
+    }
+
+    @Override
+    public void dispose() {
+        synchronized(PhoneProxy.lockForRadioTechnologyChange) {
+            if (mSimRecords != null) {
+                mSimRecords.unregisterForRecordsLoaded(this);
+            }
+            super.dispose();
+        }
+    }
+
+    @Override
+    public void removeReferences() {
+        super.removeReferences();
+    }
+
+    @Override
+    public void handleMessage(Message msg) {
+        AsyncResult ar;
+        Message onComplete;
+
+        // messages to be handled whether or not the phone is being destroyed
+        // should only include messages which are being re-directed and do not use
+        // resources of the phone being destroyed
         switch (msg.what) {
+            // handle the select network completion callbacks.
+            case EVENT_SET_NETWORK_MANUAL_COMPLETE:
+            case EVENT_SET_NETWORK_AUTOMATIC_COMPLETE:
+                super.handleMessage(msg);
+                return;
+        }
+
+        if (!mIsTheCurrentActivePhone) {
+            Rlog.e(LOG_TAG, "Received message " + msg +
+                    "[" + msg.what + "] while being destroyed. Ignoring.");
+            return;
+        }
+        switch(msg.what) {
+            case EVENT_SIM_RECORDS_LOADED:
+                mSimRecordsLoadedRegistrants.notifyRegistrants();
+                break;
+
             case EVENT_SUBSCRIPTION_ACTIVATED:
                 log("EVENT_SUBSCRIPTION_ACTIVATED");
                 onSubscriptionActivated();
@@ -122,24 +165,6 @@ public class CDMALTEPhone extends CDMAPhone {
                 super.handleMessage(msg);
         }
     }
-
-    @Override
-    protected void initSstIcc() {
-        mSST = new CdmaLteServiceStateTracker(this);
-    }
-
-    @Override
-    public void dispose() {
-        synchronized(PhoneProxy.lockForRadioTechnologyChange) {
-            super.dispose();
-        }
-    }
-
-    @Override
-    public void removeReferences() {
-        super.removeReferences();
-    }
-
     @Override
     public PhoneConstants.DataState getDataConnectionState(String apnType) {
         PhoneConstants.DataState ret = PhoneConstants.DataState.DISCONNECTED;
@@ -265,6 +290,10 @@ public class CDMALTEPhone extends CDMAPhone {
 
     @Override
     protected void onUpdateIccAvailability() {
+        if (mSimRecords != null) {
+            mSimRecords.unregisterForRecordsLoaded(this);
+        }
+
         if (mUiccController == null ) {
             return;
         }
@@ -287,6 +316,9 @@ public class CDMALTEPhone extends CDMAPhone {
             newSimRecords = (SIMRecords) newUiccApplication.getIccRecords();
         }
         mSimRecords = newSimRecords;
+        if (mSimRecords != null) {
+            mSimRecords.registerForRecordsLoaded(this, EVENT_SIM_RECORDS_LOADED, null);
+        }
 
         super.onUpdateIccAvailability();
     }
@@ -449,6 +481,17 @@ public class CDMALTEPhone extends CDMAPhone {
         ((DcTracker)mDcTracker)
                 .unregisterForAllDataDisconnected(h);
     }
+
+    @Override
+    public void registerForSimRecordsLoaded(Handler h, int what, Object obj) {
+        mSimRecordsLoadedRegistrants.addUnique(h, what, obj);
+    }
+
+    @Override
+    public void unregisterForSimRecordsLoaded(Handler h) {
+        mSimRecordsLoadedRegistrants.remove(h);
+    }
+
 
     @Override
     protected void log(String s) {
